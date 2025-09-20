@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QFileDialog
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QFileDialog, QSizePolicy
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt
 import cv2
@@ -8,9 +8,13 @@ class VideoPanel(QWidget):
     def enable_stride_mode(self):
         self.stride_mode = True
         self.points = []
+       
         self.update()
 
     def mousePressEvent(self, event):
+        print(f"VideoPanel y: {self.pos().y()}")
+        print(f"image_label y: {self.image_label.pos().y()}")
+        print(f"Mouse y: {event.pos().y()}")
         if hasattr(self, 'stride_mode') and self.stride_mode:
             if event.button() == Qt.LeftButton:
                 widget_w = self.image_label.width()
@@ -21,7 +25,20 @@ class VideoPanel(QWidget):
                     if ret:
                         x = event.pos().x() 
                         y = event.pos().y() 
-                        self.points.append((int(x), int(y)))
+
+                            # Calculate image offset inside label
+                        label_w = self.image_label.width()
+                        label_h = self.image_label.height()
+                        img_h, img_w = frame.shape[:2]
+                        scale = min(label_w / img_w, label_h / img_h)
+                        disp_w = int(img_w * scale)
+                        disp_h = int(img_h * scale)
+                        offset_x = (label_w - disp_w) / 2
+                        offset_y = (label_h - disp_h) / 2
+                        print(f"Image offset in label: x={offset_x}, y={offset_y}")
+
+
+                        self.points.append((int(x-offset_x), int(y-offset_y/2)))
                         if len(self.points) == 2:
                             self.stride_mode = False
                             self.draw_stride_lines()
@@ -34,7 +51,8 @@ class VideoPanel(QWidget):
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
             ret, frame = self.cap.read()
             if ret:
-                # Compute timestamp in seconds, zeroed at sync_frame
+               
+                # ...existing code...
                 fps = self.cap.get(cv2.CAP_PROP_FPS)
                 timestamp = (frame_num - self.sync_frame) / fps if fps else 0
                 text = f"{timestamp:.2f} sec"
@@ -44,10 +62,8 @@ class VideoPanel(QWidget):
                 thickness = 2
                 position = (10, 40)
                 frame = cv2.putText(frame, text, position, font, font_scale, color, thickness, cv2.LINE_AA)
-                # Draw vertical line
                 (x1, y1), (x2, y2) = self.points
                 frame = cv2.line(frame, (x1, y1), (x1, y2), (0, 255, 0), 3)
-                # Draw horizontal line from foot (x1, y1), length = abs(y2-y1)
                 length = abs(y2 - y1)
                 frame = cv2.line(frame, (x1, y1), (x1 + length, y1), (0, 255, 0), 3)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -59,15 +75,16 @@ class VideoPanel(QWidget):
     def __init__(self, label_text):
         super().__init__()
         self.layout = QVBoxLayout()
-        self.label = QLabel(label_text)
+        
         self.image_label = QLabel()
-        self.layout.addWidget(self.label)
+       
         self.layout.addWidget(self.image_label)
         self.setLayout(self.layout)
         self.cap = None
         self.frame_pos = 0
         self.total_frames = 0
         self.sync_frame = 0
+        self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def load_video(self, path):
         self.cap = cv2.VideoCapture(path)
@@ -134,17 +151,22 @@ class MainWindow(QMainWindow):
             if right_video:
                 self.right_panel.load_video(right_video)
             self.frame_offset = offset
-            self.sync = True
+            self.sync = offset != 0
             self.left_panel.show_frame(self.left_panel.frame_pos)
             self.right_panel.show_frame(self.left_panel.frame_pos - self.frame_offset)
-    def left_next_frame(self):
-        self.left_panel.show_frame(min(self.left_panel.total_frames - 1, self.left_panel.frame_pos + 1))
+    def left_next_frame(self, ctrl=False):
+        step = 10 if ctrl else 1
+        new_frame = min(self.left_panel.total_frames - 1, self.left_panel.frame_pos + step)
+        self.left_panel.show_frame(new_frame)
         if self.sync:
-            self.right_panel.show_frame(min(self.right_panel.total_frames - 1, self.left_panel.frame_pos - self.frame_offset))
-    def left_prev_frame(self):
-        self.left_panel.show_frame(max(0, self.left_panel.frame_pos - 1))
+            self.right_panel.show_frame(min(self.right_panel.total_frames - 1, new_frame - self.frame_offset))
+
+    def left_prev_frame(self, ctrl=False):
+        step = 10 if ctrl else 1
+        new_frame = max(0, self.left_panel.frame_pos - step)
+        self.left_panel.show_frame(new_frame)
         if self.sync:
-            self.right_panel.show_frame(max(0, self.left_panel.frame_pos - self.frame_offset))
+            self.right_panel.show_frame(max(0, new_frame - self.frame_offset))
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Baseball Pitcher Video Analysis')
@@ -188,10 +210,10 @@ class MainWindow(QMainWindow):
 
         load_left_btn.clicked.connect(self.load_left_video)
         load_right_btn.clicked.connect(self.load_right_video)
-        left_prev_btn.clicked.connect(self.left_prev_frame)
-        left_next_btn.clicked.connect(self.left_next_frame)
-        right_prev_btn.clicked.connect(self.right_prev_frame)
-        right_next_btn.clicked.connect(self.right_next_frame)
+        left_prev_btn.pressed.connect(lambda: self.left_prev_frame(ctrl=QApplication.keyboardModifiers() & Qt.ControlModifier))
+        left_next_btn.pressed.connect(lambda: self.left_next_frame(ctrl=QApplication.keyboardModifiers() & Qt.ControlModifier))
+        right_prev_btn.pressed.connect(lambda: self.right_prev_frame(ctrl=QApplication.keyboardModifiers() & Qt.ControlModifier))
+        right_next_btn.pressed.connect(lambda: self.right_next_frame(ctrl=QApplication.keyboardModifiers() & Qt.ControlModifier))
         sync_btn.clicked.connect(self.compute_sync_offset)
         save_jack_btn.clicked.connect(self.save_jack_file)
         load_jack_btn.clicked.connect(self.load_jack_file)
@@ -220,15 +242,19 @@ class MainWindow(QMainWindow):
         if self.sync:
             self.right_panel.show_frame(min(self.right_panel.total_frames - 1, self.left_panel.frame_pos - self.frame_offset))
 
-    def right_prev_frame(self):
-        self.right_panel.show_frame(max(0, self.right_panel.frame_pos - 1))
+    def right_prev_frame(self, ctrl=False):
+        step = 10 if ctrl else 1
+        new_frame = max(0, self.right_panel.frame_pos - step)
+        self.right_panel.show_frame(new_frame)
         if self.sync:
-            self.left_panel.show_frame(max(0, self.right_panel.frame_pos + self.frame_offset))
+            self.left_panel.show_frame(max(0, new_frame + self.frame_offset))
 
-    def right_next_frame(self):
-        self.right_panel.show_frame(min(self.right_panel.total_frames - 1, self.right_panel.frame_pos + 1))
+    def right_next_frame(self, ctrl=False):
+        step = 10 if ctrl else 1
+        new_frame = min(self.right_panel.total_frames - 1, self.right_panel.frame_pos + step)
+        self.right_panel.show_frame(new_frame)
         if self.sync:
-            self.left_panel.show_frame(min(self.left_panel.total_frames - 1, self.right_panel.frame_pos + self.frame_offset))
+            self.left_panel.show_frame(min(self.left_panel.total_frames - 1, new_frame + self.frame_offset))
 
     def compute_sync_offset(self):
         # Compute offset between current left and right frame
