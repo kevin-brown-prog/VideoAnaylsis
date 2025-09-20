@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QFileDialog, QSizePolicy
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QFileDialog, QSizePolicy, QScrollArea
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt
 import cv2
@@ -11,34 +11,61 @@ class VideoPanel(QWidget):
        
         self.update()
 
+    def wheelEvent(self, event):
+        # Zoom with scroll wheel
+        zoom_in = event.angleDelta().y() > 0
+        zoom_factor = 1.25 if zoom_in else 0.8
+        self.zoom_factor *= zoom_factor
+        
+        # Limit zoom range
+        self.zoom_factor = max(0.1, min(5.0, self.zoom_factor))
+        
+        if self.original_pixmap:
+            self.update_zoom()
+
+    def update_zoom(self):
+        if self.original_pixmap:
+            scaled_pixmap = self.original_pixmap.scaled(
+                self.original_pixmap.size() * self.zoom_factor,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
+            self.image_label.resize(scaled_pixmap.size())
+
     def mousePressEvent(self, event):
-        print(f"VideoPanel y: {self.pos().y()}")
-        print(f"image_label y: {self.image_label.pos().y()}")
-        print(f"Mouse y: {event.pos().y()}")
         if hasattr(self, 'stride_mode') and self.stride_mode:
             if event.button() == Qt.LeftButton:
-                widget_w = self.image_label.width()
-                widget_h = self.image_label.height()
-                if self.cap:
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.frame_pos)
-                    ret, frame = self.cap.read()
-                    if ret:
-                        x = event.pos().x() 
-                        y = event.pos().y() 
-
-                            # Calculate image offset inside label
-                        label_w = self.image_label.width()
-                        label_h = self.image_label.height()
-                        img_h, img_w = frame.shape[:2]
-                        scale = min(label_w / img_w, label_h / img_h)
-                        disp_w = int(img_w * scale)
-                        disp_h = int(img_h * scale)
-                        offset_x = (label_w - disp_w) / 2
-                        offset_y = (label_h - disp_h) / 2
-                        print(f"Image offset in label: x={offset_x}, y={offset_y}")
-
-
-                        self.points.append((int(x-offset_x), int(y-offset_y/2)))
+                if self.cap and hasattr(self, 'original_pixmap') and self.original_pixmap:
+                    # Get mouse position relative to the scroll area
+                    scroll_pos = self.scroll_area.mapFromParent(event.pos())
+                    
+                    # Get position relative to the image label within scroll area
+                    label_pos = self.image_label.mapFromParent(scroll_pos)
+                    
+                    x = label_pos.x()
+                    y = label_pos.y()
+                    
+                    # Get the current displayed pixmap size (with zoom)
+                    current_pixmap = self.image_label.pixmap()
+                    if current_pixmap:
+                        display_w = current_pixmap.width()
+                        display_h = current_pixmap.height()
+                        
+                        # Get original image dimensions
+                        orig_w = self.original_pixmap.width()
+                        orig_h = self.original_pixmap.height()
+                        
+                        # Convert from display coordinates to original image coordinates
+                        scale_x = orig_w / display_w
+                        scale_y = orig_h / display_h
+                        
+                        orig_x = int(x * scale_x)
+                        orig_y = int(y * scale_y)
+                        
+                        print(f"Click at display ({x}, {y}) -> original ({orig_x}, {orig_y})")
+                        
+                        self.points.append((orig_x, orig_y))
                         if len(self.points) == 2:
                             self.stride_mode = False
                             self.draw_stride_lines()
@@ -71,20 +98,28 @@ class VideoPanel(QWidget):
                 bytes_per_line = ch * w
                 qt_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
                 pixmap = QPixmap.fromImage(qt_img)
-                self.image_label.setPixmap(pixmap)
+                self.original_pixmap = pixmap
+                self.update_zoom()
     def __init__(self, label_text):
         super().__init__()
         self.layout = QVBoxLayout()
         
+        # Create scroll area for zoom functionality
+        self.scroll_area = QScrollArea()
         self.image_label = QLabel()
-       
-        self.layout.addWidget(self.image_label)
+        self.scroll_area.setWidget(self.image_label)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setAlignment(Qt.AlignCenter)
+        
+        self.layout.addWidget(self.scroll_area)
         self.setLayout(self.layout)
         self.cap = None
         self.frame_pos = 0
         self.total_frames = 0
         self.sync_frame = 0
         self.image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.zoom_factor = 1.0
+        self.original_pixmap = None
 
     def load_video(self, path):
         self.cap = cv2.VideoCapture(path)
@@ -119,7 +154,8 @@ class VideoPanel(QWidget):
                 bytes_per_line = ch * w
                 qt_img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
                 pixmap = QPixmap.fromImage(qt_img)
-                self.image_label.setPixmap(pixmap)
+                self.original_pixmap = pixmap
+                self.update_zoom()
                 self.frame_pos = frame_num
 
 class MainWindow(QMainWindow):
